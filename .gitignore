@@ -1,0 +1,16 @@
+# Local secrets and generated deployment state
+.env
+*.env
+*.key
+*.pem
+*.p12
+*.mobileconfig
+shadowrocket.conf
+trojan-uri.txt
+vpn-deploy.env
+vpn-deploy-nginx.conf
+
+# Local editor and OS files
+.DS_Store
+.idea/
+.vscode/

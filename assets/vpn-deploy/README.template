@@ -1,0 +1,9 @@
+This directory is a placeholder for copying or generating a full deployment package:
+
+- install.sh
+- refresh-subscription.sh
+- shadowrocket-rules.conf
+- verify.sh
+- check-ip.sh
+
+Prefer reusing an existing tested package from the user's workspace when available.

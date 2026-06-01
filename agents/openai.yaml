@@ -1,0 +1,4 @@
+interface:
+  display_name: "VPN Deploy"
+  short_description: "Deploy secure self-hosted Shadowrocket access"
+  default_prompt: "Use $vpn-deploy to deploy or diagnose a secure self-hosted VPN subscription for Shadowrocket."
