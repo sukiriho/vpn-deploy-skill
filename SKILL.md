@@ -9,7 +9,7 @@ description: Deploy, harden, diagnose, and maintain legal self-hosted VPN/access
 
 Build legal, self-owned access services with conservative security defaults. Refuse requests to impersonate residential IPs, bypass platform risk controls, hide abuse, or promise undetectability. Offer lawful alternatives: clean VPS line selection, IP reputation checks, ASN transparency, TLS hygiene, private subscription URLs, and clear client-side routing.
 
-Prefer `sing-box` for the server core and Shadowrocket-compatible output. For iOS Shadowrocket, default to Trojan over TLS/WebSocket behind Nginx or Caddy when compatibility matters.
+Prefer `sing-box` for the server core and Trojan over TLS/WebSocket behind Nginx or Caddy when compatibility matters. Treat Shadowrocket as one client output, not the only output: also provide a generic node URI, Clash/Mihomo YAML, and sing-box client JSON when users need Android/Windows compatibility.
 
 ## Workflow
 
@@ -20,15 +20,19 @@ Prefer `sing-box` for the server core and Shadowrocket-compatible output. For iO
 
 2. Choose a safe architecture:
    - If an existing website/Nginx owns `443`, bind `sing-box` to `127.0.0.1` and reverse-proxy WebSocket traffic.
+   - When Nginx already serves websites, add a separate `server_name` block for the VPN subdomain; do not edit existing site files unless the user explicitly asks.
+   - Use webroot ACME (`certbot certonly --webroot`) for that new block instead of `certbot --nginx` when avoiding changes to existing websites matters.
    - If no web server exists, Caddy is acceptable for automatic TLS and static subscription hosting.
    - Use a dedicated subdomain like `vpn.example.com`; keep Cloudflare DNS as DNS-only for non-Cloudflare-compatible proxy protocols.
+   - If no branded DNS record exists and the user wants immediate deployment, an auto-resolving name such as `<label>.<ip>.sslip.io` can be used as a temporary dedicated subdomain. Clearly note how to migrate to the user's own DNS later.
 
 3. Generate secrets:
    - Strong Trojan password.
    - Random WebSocket path.
    - Random subscription path.
    - HTTP Basic Auth username/password for every subscription endpoint.
-   - Store generated values in a root-only env file such as `/root/vpn-deploy.env`; do not paste secrets in final replies.
+   - Store generated values and final URL names in a root-only env file such as `/root/vpn-deploy.env`; write shell-safe values so names with spaces do not break later `source`.
+   - Include `SUBSCRIPTION_URL`, `SERVER_SUBSCRIPTION_URL`/`NODE_SUBSCRIPTION_URL`, `CLASH_META_URL`, and `SING_BOX_CLIENT_URL` when those outputs exist.
 
 4. Deploy server:
    - Install `sing-box`.
@@ -37,10 +41,12 @@ Prefer `sing-box` for the server core and Shadowrocket-compatible output. For iO
    - Configure Nginx/Caddy for TLS, WebSocket proxying, subscription hosting, and Basic Auth.
    - Open only SSH, HTTP/80, and HTTPS/443 unless the existing environment requires otherwise.
 
-5. Generate Shadowrocket outputs:
+5. Generate client outputs:
    - Full remote config: `[General]`, `[Proxy]`, `[Proxy Group]`, `[Rule]`, optional `[Host]`.
-   - Server subscription: a single `trojan://...` URI for Shadowrocket's "Server Subscription" flow.
-   - Explain clearly that node subscriptions do not carry rules; full config subscriptions do.
+   - Generic node subscription: a single `trojan://...` URI for Shadowrocket's "Server Subscription" flow and clients such as v2rayN, NekoRay, v2rayNG, and NekoBox.
+   - Clash/Mihomo YAML for common Android/Windows Clash-family clients.
+   - sing-box client JSON for native sing-box clients.
+   - Explain clearly that node subscriptions do not carry routing rules; full config, Clash/Mihomo, and sing-box configs can carry rules.
 
 6. Validate from both server and public network:
    - `sing-box check -c /etc/sing-box/config.json`
@@ -48,6 +54,8 @@ Prefer `sing-box` for the server core and Shadowrocket-compatible output. For iO
    - `curl -I` against clean subscription URLs without credentials: expect `401`.
    - `curl -u user:pass` against full config: expect `200` and `[Rule]`.
    - `curl -u user:pass` against `/server`: expect `200` and `trojan://`.
+   - `curl -u user:pass` against `/clash`: expect `200` and `proxies:`.
+   - `curl -u user:pass` against `/sing-box`: expect `200` and valid JSON.
    - Test WebSocket upgrade or an actual local `sing-box` client when possible.
 
 7. Maintain:
@@ -76,3 +84,9 @@ Say exactly which endpoint goes into which Shadowrocket UI:
 
 - `SERVER_SUBSCRIPTION_URL`: server/node subscription.
 - `SUBSCRIPTION_URL`: full config subscription with routing rules.
+
+For Android/Windows, point users to:
+
+- `NODE_SUBSCRIPTION_URL`: generic Trojan node subscription for v2rayN/NekoRay/v2rayNG/NekoBox style clients.
+- `CLASH_META_URL`: Clash Meta/Mihomo YAML.
+- `SING_BOX_CLIENT_URL`: sing-box client JSON.

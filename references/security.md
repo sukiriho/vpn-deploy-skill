@@ -20,6 +20,7 @@ Offer safer alternatives:
 
 - Never expose subscription files publicly.
 - Use both a high-entropy path and HTTP Basic Auth.
+- Treat full URLs containing embedded Basic Auth as secrets. HTTPS encrypts them in transit, but anyone with the full URL can fetch the subscription.
 - Keep old paths returning `404` after rotation.
 - Verify with clean unauthenticated URLs; URLs with embedded credentials will return `200` because they are already authenticated.
 - Avoid pasting secrets in final replies; show a command to retrieve them from the server.

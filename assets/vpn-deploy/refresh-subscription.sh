@@ -13,6 +13,8 @@ Options:
   --rules-file PATH          Default: ./shadowrocket-rules.conf, then /root/shadowrocket-rules.conf
   --output PATH              Default: /opt/shadowrocket-sub/shadowrocket.conf
   --uri-output PATH          Default: trojan-uri.txt beside --output
+  --clash-output PATH        Default: clash-meta.yaml beside --output
+  --sing-box-output PATH     Default: sing-box-client.json beside --output
   -h, --help                 Show this help.
 USAGE
 }
@@ -35,6 +37,8 @@ ENV_FILE="/root/vpn-deploy.env"
 RULES_FILE=""
 OUTPUT="/opt/shadowrocket-sub/shadowrocket.conf"
 URI_OUTPUT=""
+CLASH_OUTPUT=""
+SING_BOX_OUTPUT=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -54,6 +58,14 @@ while [[ $# -gt 0 ]]; do
       URI_OUTPUT="${2:-}"
       shift 2
       ;;
+    --clash-output)
+      CLASH_OUTPUT="${2:-}"
+      shift 2
+      ;;
+    --sing-box-output)
+      SING_BOX_OUTPUT="${2:-}"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -68,8 +80,11 @@ done
 # shellcheck disable=SC1090
 . "${ENV_FILE}"
 
+VPN_DOMAIN="${VPN_DOMAIN:-${DOMAIN:-}}"
+SUB_DOMAIN="${SUB_DOMAIN:-${VPN_DOMAIN}}"
+NODE_NAME="${NODE_NAME:-${NAME:-VPN}}"
+
 [[ -n "${VPN_DOMAIN:-}" ]] || die "VPN_DOMAIN missing in ${ENV_FILE}"
-[[ -n "${NODE_NAME:-}" ]] || die "NODE_NAME missing in ${ENV_FILE}"
 [[ -n "${TROJAN_PASSWORD:-}" ]] || die "TROJAN_PASSWORD missing in ${ENV_FILE}"
 [[ -n "${WS_PATH:-}" ]] || die "WS_PATH missing in ${ENV_FILE}"
 
@@ -86,7 +101,11 @@ fi
 
 install -d -m 0755 "$(dirname "${OUTPUT}")"
 URI_OUTPUT="${URI_OUTPUT:-$(dirname "${OUTPUT}")/trojan-uri.txt}"
+CLASH_OUTPUT="${CLASH_OUTPUT:-$(dirname "${OUTPUT}")/clash-meta.yaml}"
+SING_BOX_OUTPUT="${SING_BOX_OUTPUT:-$(dirname "${OUTPUT}")/sing-box-client.json}"
 install -d -m 0755 "$(dirname "${URI_OUTPUT}")"
+install -d -m 0755 "$(dirname "${CLASH_OUTPUT}")"
+install -d -m 0755 "$(dirname "${SING_BOX_OUTPUT}")"
 
 encoded_password="$(urlencode "${TROJAN_PASSWORD}")"
 encoded_path="$(urlencode "${WS_PATH}")"
@@ -131,5 +150,86 @@ cat >"${URI_OUTPUT}" <<EOF
 ${trojan_uri}
 EOF
 
-chmod 0644 "${OUTPUT}" "${URI_OUTPUT}"
+cat >"${CLASH_OUTPUT}" <<EOF
+mixed-port: 7890
+allow-lan: false
+mode: rule
+log-level: warning
+ipv6: false
+
+proxies:
+  - name: "${NODE_NAME}"
+    type: trojan
+    server: ${VPN_DOMAIN}
+    port: 443
+    password: "${TROJAN_PASSWORD}"
+    sni: ${VPN_DOMAIN}
+    skip-cert-verify: false
+    network: ws
+    ws-opts:
+      path: "${WS_PATH}"
+      headers:
+        Host: ${VPN_DOMAIN}
+
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - "${NODE_NAME}"
+      - DIRECT
+
+rules:
+  - DOMAIN-SUFFIX,local,DIRECT
+  - IP-CIDR,10.0.0.0/8,DIRECT
+  - IP-CIDR,172.16.0.0/12,DIRECT
+  - IP-CIDR,192.168.0.0/16,DIRECT
+  - GEOIP,CN,DIRECT
+  - MATCH,PROXY
+EOF
+
+python3 - "${VPN_DOMAIN}" "${NODE_NAME}" "${TROJAN_PASSWORD}" "${WS_PATH}" >"${SING_BOX_OUTPUT}" <<'PY'
+import json
+import sys
+
+domain, node_name, password, ws_path = sys.argv[1:]
+config = {
+    "log": {"level": "warn", "timestamp": True},
+    "dns": {
+        "servers": [
+            {"tag": "cf", "address": "1.1.1.1"},
+            {"tag": "google", "address": "8.8.8.8"},
+        ]
+    },
+    "inbounds": [
+        {"type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": 2080}
+    ],
+    "outbounds": [
+        {
+            "type": "trojan",
+            "tag": node_name,
+            "server": domain,
+            "server_port": 443,
+            "password": password,
+            "tls": {"enabled": True, "server_name": domain},
+            "transport": {"type": "ws", "path": ws_path, "headers": {"Host": domain}},
+        },
+        {"type": "direct", "tag": "direct"},
+        {"type": "block", "tag": "block"},
+    ],
+    "route": {
+        "rules": [
+            {"ip_is_private": True, "outbound": "direct"},
+            {"domain_suffix": ["local"], "outbound": "direct"},
+            {"geoip": ["cn"], "outbound": "direct"},
+        ],
+        "final": node_name,
+    },
+}
+print(json.dumps(config, ensure_ascii=False, indent=2))
+PY
+
+chmod 0644 "${OUTPUT}" "${URI_OUTPUT}" "${CLASH_OUTPUT}" "${SING_BOX_OUTPUT}"
 echo "Regenerated ${OUTPUT}"
+echo "Regenerated ${URI_OUTPUT}"
+echo "Regenerated ${CLASH_OUTPUT}"
+echo "Regenerated ${SING_BOX_OUTPUT}"

@@ -65,6 +65,10 @@ print(quote(sys.argv[1], safe=""))
 PY
 }
 
+write_env_line() {
+  printf '%s=%q\n' "$1" "$2" >>/root/vpn-deploy.env
+}
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 VPN_DOMAIN=""
 SUB_DOMAIN=""
@@ -295,6 +299,20 @@ server {
     default_type text/plain;
   }
 
+  location = ${SUB_PATH}/clash {
+    auth_basic "VPN subscription";
+    auth_basic_user_file /etc/nginx/.htpasswd-vpn-sub;
+    try_files /clash-meta.yaml =404;
+    default_type text/yaml;
+  }
+
+  location = ${SUB_PATH}/sing-box {
+    auth_basic "VPN subscription";
+    auth_basic_user_file /etc/nginx/.htpasswd-vpn-sub;
+    try_files /sing-box-client.json =404;
+    default_type application/json;
+  }
+
   location / {
     return 404;
   }
@@ -379,6 +397,20 @@ server {
     auth_basic_user_file /etc/nginx/.htpasswd-vpn-sub;
     try_files /trojan-uri.txt =404;
     default_type text/plain;
+  }
+
+  location = ${SUB_PATH}/clash {
+    auth_basic "VPN subscription";
+    auth_basic_user_file /etc/nginx/.htpasswd-vpn-sub;
+    try_files /clash-meta.yaml =404;
+    default_type text/yaml;
+  }
+
+  location = ${SUB_PATH}/sing-box {
+    auth_basic "VPN subscription";
+    auth_basic_user_file /etc/nginx/.htpasswd-vpn-sub;
+    try_files /sing-box-client.json =404;
+    default_type application/json;
   }
 
   location / {
@@ -509,6 +541,26 @@ ${VPN_DOMAIN} {
     file_server
   }
 
+  @clash_subscription path ${SUB_PATH}/clash
+  handle @clash_subscription {
+    basic_auth {
+      ${SUB_AUTH_USER} ${caddy_auth_hash}
+    }
+    root * /opt/shadowrocket-sub
+    rewrite * /clash-meta.yaml
+    file_server
+  }
+
+  @sing_box_subscription path ${SUB_PATH}/sing-box
+  handle @sing_box_subscription {
+    basic_auth {
+      ${SUB_AUTH_USER} ${caddy_auth_hash}
+    }
+    root * /opt/shadowrocket-sub
+    rewrite * /sing-box-client.json
+    file_server
+  }
+
   handle {
     respond "not found" 404
   }
@@ -551,6 +603,26 @@ ${SUB_DOMAIN} {
     }
     root * /opt/shadowrocket-sub
     rewrite * /trojan-uri.txt
+    file_server
+  }
+
+  @clash_subscription path ${SUB_PATH}/clash
+  handle @clash_subscription {
+    basic_auth {
+      ${SUB_AUTH_USER} ${caddy_auth_hash}
+    }
+    root * /opt/shadowrocket-sub
+    rewrite * /clash-meta.yaml
+    file_server
+  }
+
+  @sing_box_subscription path ${SUB_PATH}/sing-box
+  handle @sing_box_subscription {
+    basic_auth {
+      ${SUB_AUTH_USER} ${caddy_auth_hash}
+    }
+    root * /opt/shadowrocket-sub
+    rewrite * /sing-box-client.json
     file_server
   }
 
@@ -628,26 +700,117 @@ EOF
   cat >/opt/shadowrocket-sub/trojan-uri.txt <<EOF
 ${trojan_uri}
 EOF
-  chmod 0644 /opt/shadowrocket-sub/shadowrocket.conf /opt/shadowrocket-sub/trojan-uri.txt
+
+  cat >/opt/shadowrocket-sub/clash-meta.yaml <<EOF
+mixed-port: 7890
+allow-lan: false
+mode: rule
+log-level: warning
+ipv6: false
+
+proxies:
+  - name: "${NODE_NAME}"
+    type: trojan
+    server: ${VPN_DOMAIN}
+    port: 443
+    password: "${TROJAN_PASSWORD}"
+    sni: ${VPN_DOMAIN}
+    skip-cert-verify: false
+    network: ws
+    ws-opts:
+      path: "${WS_PATH}"
+      headers:
+        Host: ${VPN_DOMAIN}
+
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies:
+      - "${NODE_NAME}"
+      - DIRECT
+
+rules:
+  - DOMAIN-SUFFIX,local,DIRECT
+  - IP-CIDR,10.0.0.0/8,DIRECT
+  - IP-CIDR,172.16.0.0/12,DIRECT
+  - IP-CIDR,192.168.0.0/16,DIRECT
+  - GEOIP,CN,DIRECT
+  - MATCH,PROXY
+EOF
+
+  python3 - "${VPN_DOMAIN}" "${NODE_NAME}" "${TROJAN_PASSWORD}" "${WS_PATH}" >/opt/shadowrocket-sub/sing-box-client.json <<'PY'
+import json
+import sys
+
+domain, node_name, password, ws_path = sys.argv[1:]
+config = {
+    "log": {"level": "warn", "timestamp": True},
+    "dns": {
+        "servers": [
+            {"tag": "cf", "address": "1.1.1.1"},
+            {"tag": "google", "address": "8.8.8.8"},
+        ]
+    },
+    "inbounds": [
+        {"type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": 2080}
+    ],
+    "outbounds": [
+        {
+            "type": "trojan",
+            "tag": node_name,
+            "server": domain,
+            "server_port": 443,
+            "password": password,
+            "tls": {"enabled": True, "server_name": domain},
+            "transport": {"type": "ws", "path": ws_path, "headers": {"Host": domain}},
+        },
+        {"type": "direct", "tag": "direct"},
+        {"type": "block", "tag": "block"},
+    ],
+    "route": {
+        "rules": [
+            {"ip_is_private": True, "outbound": "direct"},
+            {"domain_suffix": ["local"], "outbound": "direct"},
+            {"geoip": ["cn"], "outbound": "direct"},
+        ],
+        "final": node_name,
+    },
+}
+print(json.dumps(config, ensure_ascii=False, indent=2))
+PY
+
+  chmod 0644 /opt/shadowrocket-sub/shadowrocket.conf /opt/shadowrocket-sub/trojan-uri.txt /opt/shadowrocket-sub/clash-meta.yaml /opt/shadowrocket-sub/sing-box-client.json
 }
 
 write_secret_summary() {
-  cat >/root/vpn-deploy.env <<EOF
-VPN_DOMAIN=${VPN_DOMAIN}
-SUB_DOMAIN=${SUB_DOMAIN}
-NODE_NAME=${NODE_NAME}
-ACME_EMAIL=${EMAIL}
-WEB_SERVER=${WEB_SERVER}
-TROJAN_PASSWORD=${TROJAN_PASSWORD}
-WS_PATH=${WS_PATH}
-SUB_PATH=${SUB_PATH}
-SUB_AUTH_USER=${SUB_AUTH_USER}
-SUB_AUTH_PASSWORD=${SUB_AUTH_PASSWORD}
-SUBSCRIPTION_URL=https://${SUB_AUTH_USER}:${SUB_AUTH_PASSWORD}@${SUB_DOMAIN}${SUB_PATH}
-SERVER_SUBSCRIPTION_URL=https://${SUB_AUTH_USER}:${SUB_AUTH_PASSWORD}@${SUB_DOMAIN}${SUB_PATH}/server
-TROJAN_URI_FILE=/opt/shadowrocket-sub/trojan-uri.txt
-SHADOWROCKET_CONF=/opt/shadowrocket-sub/shadowrocket.conf
-EOF
+  local subscription_url node_subscription_url clash_meta_url sing_box_client_url
+  local encoded_auth_user encoded_auth_password
+  encoded_auth_user="$(urlencode "${SUB_AUTH_USER}")"
+  encoded_auth_password="$(urlencode "${SUB_AUTH_PASSWORD}")"
+  subscription_url="https://${encoded_auth_user}:${encoded_auth_password}@${SUB_DOMAIN}${SUB_PATH}"
+  node_subscription_url="https://${encoded_auth_user}:${encoded_auth_password}@${SUB_DOMAIN}${SUB_PATH}/server"
+  clash_meta_url="https://${encoded_auth_user}:${encoded_auth_password}@${SUB_DOMAIN}${SUB_PATH}/clash"
+  sing_box_client_url="https://${encoded_auth_user}:${encoded_auth_password}@${SUB_DOMAIN}${SUB_PATH}/sing-box"
+  : >/root/vpn-deploy.env
+  write_env_line VPN_DOMAIN "${VPN_DOMAIN}"
+  write_env_line SUB_DOMAIN "${SUB_DOMAIN}"
+  write_env_line NODE_NAME "${NODE_NAME}"
+  write_env_line ACME_EMAIL "${EMAIL}"
+  write_env_line WEB_SERVER "${WEB_SERVER}"
+  write_env_line TROJAN_PASSWORD "${TROJAN_PASSWORD}"
+  write_env_line WS_PATH "${WS_PATH}"
+  write_env_line SUB_PATH "${SUB_PATH}"
+  write_env_line SUB_AUTH_USER "${SUB_AUTH_USER}"
+  write_env_line SUB_AUTH_PASSWORD "${SUB_AUTH_PASSWORD}"
+  write_env_line SUBSCRIPTION_URL "${subscription_url}"
+  write_env_line SERVER_SUBSCRIPTION_URL "${node_subscription_url}"
+  write_env_line NODE_SUBSCRIPTION_URL "${node_subscription_url}"
+  write_env_line CLASH_META_URL "${clash_meta_url}"
+  write_env_line SING_BOX_CLIENT_URL "${sing_box_client_url}"
+  write_env_line TROJAN_URI_FILE /opt/shadowrocket-sub/trojan-uri.txt
+  write_env_line SHADOWROCKET_CONF /opt/shadowrocket-sub/shadowrocket.conf
+  write_env_line CLASH_META_CONF /opt/shadowrocket-sub/clash-meta.yaml
+  write_env_line SING_BOX_CLIENT_CONF /opt/shadowrocket-sub/sing-box-client.json
   chmod 0600 /root/vpn-deploy.env
 }
 
